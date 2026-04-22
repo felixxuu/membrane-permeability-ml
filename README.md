@@ -34,10 +34,13 @@ More broadly, this work is an entry point into a longer research interest: build
 | Accuracy   | 0.8834 |
 | ROC-AUC    | 0.9612 |
 
-![ROC Curve](results/roc_curve.png)
+<p align="center">
+  <img src="results/roc_curve.png" alt="ROC Curve" width="500"/>
+</p>
 
-![Confusion Matrix](results/confusion_matrix.png)
-
+<p align="center">
+  <img src="results/confusion_matrix.png" alt="Confusion Matrix" width="450"/>
+</p>
 ### Per-class performance
 
 |        | Precision | Recall | F1    |
@@ -78,6 +81,8 @@ Run notebooks in order:
 - `notebooks/02_baseline_model.ipynb` — featurization, training, evaluation
 
 ## Project Structure
+
+```
 membrane-permeability-ml/
 ├── README.md
 ├── data/
@@ -90,7 +95,6 @@ membrane-permeability-ml/
 │   ├── confusion_matrix.png
 │   └── rf_baseline_model.pkl
 └── src/
----
-
+```
 *Author*: Ying (Felix) Xu  
 *Context*: Initial exploration toward building structured, ML-ready datasets for drug-membrane interaction prediction.
