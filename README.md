@@ -11,8 +11,8 @@ Most modern cheminformatics pipelines treat permeability as a purely statistical
 This project revisits that tension. On a standardized BBB dataset, it compares:
 
 1. A statistical baseline (Morgan fingerprints + Random Forest)
-2. A physics-based linear model (LFER-style on Abraham-like descriptors) *(in progress)*
-3. A hybrid model combining physics priors with ML residual correction *(in progress)*
+2. A physics-based linear model (LFER-style on Abraham-like descriptors)
+3. A hybrid model combining physics priors with ML residual correction
 
 The goal is not a state-of-the-art score, but a transparent comparison of what each paradigm captures — and where physics fails in ways that ML can complement.
 
@@ -21,11 +21,13 @@ The goal is not a state-of-the-art score, but a transparent comparison of what e
 **B3DB** (Blood-Brain Barrier Database) — 7,807 curated molecules with binary BBB+/BBB- labels and 1,058 with continuous logBB values.
 Source: [theochem/B3DB](https://github.com/theochem/B3DB).
 
-- After RDKit sanitization: **7,805 molecules**
+- After RDKit sanitization: **7,805 molecules** for classification
+- Continuous logBB subset: **1,058 molecules** for regression
 - Class distribution: BBB+ (4,956) / BBB- (2,849), mild imbalance (~1.74:1)
-- Continuous logBB subset enables parallel regression analysis
 
-## Current Results — Statistical Baseline
+## Part I — Statistical Baseline (Classification)
+
+A Random Forest trained on 2048-bit Morgan fingerprints (radius=2) with balanced class weights, evaluated via 80/20 stratified split.
 
 | Metric     | Value  |
 |------------|--------|
@@ -47,31 +49,65 @@ Source: [theochem/B3DB](https://github.com/theochem/B3DB).
 | BBB-   | 0.89      | 0.78   | 0.83  |
 | BBB+   | 0.88      | 0.94   | 0.91  |
 
-**Observation**: The model shows asymmetric recall — higher sensitivity for BBB+ (0.94) than for BBB- (0.78). For downstream drug-discovery applications, this translates to elevated false-positive risk when screening non-CNS candidates.
+The model exhibits asymmetric recall — higher sensitivity for BBB+ (0.94) than BBB- (0.78). Most confident misclassifications cluster into two archetypes: large natural products (macrolides, terpenoids) and antibiotic-class compounds with MW > 500 Da, which exceed the effective applicability domain of radius-2 fingerprints.
 
-## Error Analysis — When Fingerprint Models Fail
+## Part II — Physics-Informed Extension (Regression)
 
-The most confident misclassifications cluster into two archetypes:
+### LFER baseline
 
-1. **Complex natural products** with stereochemically dense scaffolds (macrolides, terpenoids)
-2. **Antibiotic-class compounds** (dextramycin, plicamycin) with MW > 500 Da
+A linear regression on seven physicochemical descriptors — MW, logP, TPSA, HBD, HBA, rotatable bonds, molar refractivity — each carrying a mechanistic interpretation grounded in membrane transport theory.
 
-These molecules exceed typical small-molecule drug space and are underrepresented in the training distribution. Morgan fingerprints at radius=2 cannot capture long-range stereochemical interactions that govern permeability in such scaffolds.
+**Test performance:** R² = 0.217, RMSE = 0.666
 
-This failure mode motivates the **physics-informed direction** below.
+The modest R² is informative rather than disappointing. Inspection of the standardized coefficients reveals several sign violations relative to established physics (e.g., logP negative, MW positive) — a diagnostic signature of severe multicollinearity among the descriptors.
 
-## Roadmap — Physics-Informed Extension (In Progress)
+### Multicollinearity diagnosis
 
-Planned notebook `03_physics_informed_model.ipynb` will add:
+<p align="center">
+  <img src="results/descriptor_correlation.png" alt="Descriptor Correlation Matrix" width="550"/>
+</p>
 
-- **LFER baseline**: A linear regression on Abraham-like physicochemical descriptors (logP, TPSA, MW, HBD, HBA, rotatable bonds, molar refractivity). Each coefficient carries a physical interpretation that can be compared against the published literature.
-- **Residual analysis**: Systematic examination of where the physics-only model fails, stratified by molecular class.
-- **Hybrid mechanistic-statistical model**: LFER prediction + ML residual correction, quantifying how much permeability variance requires empirical rather than mechanistic description.
+The correlation matrix reveals that the seven descriptors span roughly **three effective dimensions**:
 
-The aim is a transparent decomposition: *how much of membrane permeability is physics, and how much is empirical correction?*
+- A "size" axis: MW ↔ MolarRefractivity (r = 0.98)
+- A "polarity/H-bonding" axis: TPSA ↔ HBA (r = 0.89), TPSA ↔ HBD (r = 0.81)
+- A quasi-independent "hydrophobicity" axis: logP (only moderately correlated with the rest)
+
+Ridge regression (L2-regularized) was applied as a standard remedy but yielded nearly identical performance (R² = 0.218), confirming that regularization alone cannot resolve near-perfect collinearity (r = 0.98). The plateau at R² ≈ 0.22 also likely reflects a **noise ceiling** imposed by the heterogeneous experimental provenance of B3DB logBB values (diverse animal models, assay protocols, and transport conditions).
+
+### Hybrid model — physics + ML residual
+
+The hybrid architecture uses LFER predictions as a physics-informed prior, then trains a Random Forest on Morgan fingerprints to predict only the **residuals** left by the physics baseline. Final prediction = LFER + RF_residual.
+
+| Model | R² | RMSE | Interpretability |
+|---|---|---|---|
+| LFER (physics only) | 0.217 | 0.666 | High |
+| Pure RF (ML only) | 0.471 | 0.548 | Low |
+| **Hybrid (physics + ML residual)** | **0.512** | **0.526** | Medium (physics part) |
+
+<p align="center">
+  <img src="results/three_model_comparison.png" alt="Three-model comparison" width="900"/>
+</p>
+
+**Key observation.** The hybrid model outperforms both individual baselines — including Pure RF, despite the latter having access to full molecular structure via 2048-bit fingerprints. The +4 percentage-point gain of Hybrid over Pure RF suggests that explicit physicochemical priors encode information that fingerprint-based ML cannot recover on its own. This is consistent with the view that physics-informed architectures are not merely "equivalent" to large ML models, but provide **complementary inductive bias**.
+
+## Part III — Failure Mode Analysis
+
+A qualitative examination of the ten worst LFER predictions reveals three distinct mechanistic categories where the linear additive framework breaks down:
+
+<p align="center">
+  <img src="results/lfer_worst_predictions.png" alt="Top-10 LFER failure modes" width="900"/>
+</p>
+
+**1. Ionizable / permanently charged molecules** — e.g., amidine-containing tz-17, imidazolium sbb079053. LFER's seven descriptors contain no explicit charge or ionization term; permanent cations are systematically mispredicted.
+
+**2. Active transport substrates** — e.g., cimetidine analog (P-gp efflux substrate), 4-fluoropaclitaxel (taxane scaffold). Molecules subject to carrier-mediated uptake or efflux violate the passive-diffusion assumption underlying LFER.
+
+**3. Extreme molecular weight outliers** — e.g., 4-fluoropaclitaxel (MW 872) and macrolide-type antibiotics (MW > 500). These violate Lipinski's rule of five yet still permeate, suggesting additive descriptor models break down at scaffold extremes.
+
+The ML residual correction in the Hybrid model partially recovers these cases by capturing scaffold-level fingerprint patterns that LFER cannot express — empirically validating the thesis that physics and ML provide complementary, non-redundant inductive biases.
 
 ## Project Structure
-
 ```
 membrane-permeability-ml/
 ├── README.md
@@ -79,14 +115,17 @@ membrane-permeability-ml/
 │   └── B3DB_classification.tsv
 ├── notebooks/
 │   ├── 01_explore_data.ipynb
-│   └── 02_baseline_model.ipynb
+│   ├── 02_baseline_model.ipynb
+│   └── 03_physics_informed_model.ipynb
 ├── results/
 │   ├── roc_curve.png
 │   ├── confusion_matrix.png
+│   ├── descriptor_correlation.png
+│   ├── three_model_comparison.png
+│   ├── lfer_worst_predictions.png
 │   └── rf_baseline_model.pkl
 └── src/
 ```
-
 
 ## Reproducibility
 
@@ -100,13 +139,15 @@ Download `B3DB_classification.tsv` from [theochem/B3DB](https://github.com/theoc
 
 Run notebooks in order:
 - `notebooks/01_explore_data.ipynb` — data exploration and quality control
-- `notebooks/02_baseline_model.ipynb` — featurization, training, evaluation
+- `notebooks/02_baseline_model.ipynb` — fingerprint featurization, training, evaluation
+- `notebooks/03_physics_informed_model.ipynb` — LFER, multicollinearity diagnosis, hybrid model, failure mode analysis
 
 ## Limitations and Future Directions
 
-- **Featurization ceiling**: Morgan fingerprints ignore 3D conformation and stereochemistry at scale. Graph neural networks (e.g., Chemprop, MPNN) may close this gap.
-- **Training distribution bias**: B3DB skews toward classical drug-like chemistry. Generalization to peptides, natural products, and biologics requires expanded training data.
-- **Mechanism blind spot**: Current models treat permeability as a property of the molecule alone. In reality, permeability depends on lipid composition, transporter expression, and membrane state — none of which are represented here. Pairing molecular descriptors with explicit membrane biophysics is a promising future direction.
+- **Featurization ceiling.** Morgan fingerprints ignore 3D conformation, stereochemistry, and long-range electronic effects. Graph neural networks (e.g., Chemprop, D-MPNN) may close part of this gap.
+- **Missing physical descriptors.** The failure mode analysis points to specific unmodeled physics — formal charge, ionization state, transporter recognition signatures. Incorporating explicit charge descriptors or pKa-derived features is a natural next step.
+- **Noise ceiling.** The plateau at R² ≈ 0.22 for linear models likely reflects experimental heterogeneity in B3DB rather than modeling inadequacy. Filtering for protocol-consistent subsets, or re-measuring on a controlled platform (e.g., parallel artificial membrane permeability assay, droplet interface bilayers), would enable cleaner physics-informed benchmarking.
+- **Passive-diffusion assumption.** All models here treat permeability as a property of the molecule alone. True permeability depends jointly on molecular structure, lipid composition, and membrane state — a trio that paired molecular-membrane datasets would be needed to address.
 
 ---
 
